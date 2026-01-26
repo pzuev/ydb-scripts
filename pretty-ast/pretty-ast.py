@@ -42,6 +42,7 @@ COLOR_LITERAL = 'literal'
 COLOR_ARG = 'arg'
 COLOR_LAMBDA = COLOR_ARG
 COLOR_REF = None
+COLOR_TABLINE = 'tabline'
 
 COLORS = {
     COLOR_COMMENT: '2;128;128;128',
@@ -49,7 +50,8 @@ COLORS = {
     COLOR_SPECIAL_EXPR: '2;128;0;128',
     COLOR_STRING_LITERAL: '2;64;192;192',
     COLOR_LITERAL: '2;64;192;192',
-    COLOR_ARG: '2;192;156;0'
+    COLOR_ARG: '2;192;156;0',
+    COLOR_TABLINE: '2;64;64;64'
 }
 
 class Color:
@@ -120,7 +122,9 @@ class Context:
 
 def print_list(out, the_list, callables, context):
     def print_shift(sh):
-        out.write(" "*(sh*4))
+        for _ in range(sh):
+            with Color(COLOR_TABLINE):
+                out.write('\u2506   ')
 
     oper = get_oper(the_list)
     is_long_oper = oper is not None and (oper in COMPLEX_ARGS)
