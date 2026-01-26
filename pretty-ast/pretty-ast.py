@@ -54,6 +54,7 @@ COLORS = {
     COLOR_TABLINE: '2;64;64;64'
 }
 
+
 class Color:
     def __init__(self, color_name):
         if color_name and (color_name in COLORS) and sys.stdout.isatty():
@@ -76,15 +77,18 @@ class List:
         self.list = []
         self.is_quote = is_quote
 
+
 class Element:
     def __init__(self, is_quote, value, is_quoted_str=False):
         self.value = value
         self.is_quote = is_quote
         self.is_quoted_str = is_quoted_str
 
+
 class Reference:
     def __init__(self, alias):
         self.alias = alias
+
 
 def get_oper_from_raw_list(the_list):
     oper = None
@@ -94,8 +98,10 @@ def get_oper_from_raw_list(the_list):
             oper = item.value
     return oper
 
+
 def get_oper(the_list):
     return get_oper_from_raw_list(the_list.list)
+
 
 def get_oper_color(oper):
     if not oper:
@@ -107,24 +113,31 @@ def get_oper_color(oper):
     else:
         return COLOR_FUNC_NAME
 
+
 class Context:
-    def __init__(self, parent=None, shift=None, is_lambda_args=False):
+    def __init__(self, parent=None, shift=None, is_lambda_args=False, tabstops=None):
         self.shift = 0
         self.lambda_args = set()
         if parent is not None:
+            self.tabstops = parent.tabstops
             self.shift = parent.shift
             if not is_lambda_args:
                 self.lambda_args.update(parent.lambda_args)
         if shift is not None:
             self.shift = shift
+        if tabstops is not None:
+            self.tabstops = tabstops
         self.is_lambda_args = is_lambda_args
 
 
 def print_list(out, the_list, callables, context):
     def print_shift(sh):
         for _ in range(sh):
-            with Color(COLOR_TABLINE):
-                out.write('\u2506   ')
+            if context.tabstops:
+                with Color(COLOR_TABLINE):
+                    out.write('   \u2506')
+            else:
+                out.write('    ')
 
     oper = get_oper(the_list)
     is_long_oper = oper is not None and (oper in COMPLEX_ARGS)
@@ -547,7 +560,10 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-n', '--nodes', default=[], action='append')
     argparser.add_argument('-r', '--repo', default=None)
+    argparser.add_argument('-t', '--tabstops', action='store_true', default=False)
     args = argparser.parse_args()
+
+    tabstops = args.tabstops
 
     node_descrs = {}
     node_files = []
@@ -575,5 +591,5 @@ if __name__ == '__main__':
     replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
     simplified_program = List(False)
     simplified_program.list = simplify_blocks(replaced_program.list)
-    print_list(sys.stdout, simplified_program, callables, Context())
+    print_list(sys.stdout, simplified_program, callables, Context(tabstops=tabstops))
     print()
