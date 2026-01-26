@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
 import sys
+import argparse
 import json
 
 COMPLEX_ARGS = {
+    'KqpPhysicalQuery',
+    'KqpBlockReadOlapTableRanges',
+    'KqpPhysicalTx',
+    'KqpTxResultBinding',
+    # 'DqPhyStage',
+    'DqPhyHashCombine',
+    'WideCombiner',
     'BlockHashJoinCore',
     'BlockAsStruct',
     'BlockMergeFinalizeHashed',
@@ -13,8 +21,10 @@ COMPLEX_ARGS = {
     'WideMap',
     'WideFilter',
     'ExpandMap',
+    'Condense',
+    'WideCondense',
     'Condense1',
-    'KqpBlockReadOlapTableRanges',
+    'WideCondense1',
     'KqpOlapFilter',
     'KqpOlapAnd',
     'StructType',
@@ -84,16 +94,22 @@ def get_oper_from_raw_list(the_list):
 def get_oper(the_list):
     return get_oper_from_raw_list(the_list.list)
 
-def print_list(out, the_list, shift=0):
+def print_list(out, the_list, callables, shift=0):
     def print_shift(sh):
         out.write(" "*(sh*4))
 
     oper = get_oper(the_list)
     is_long_oper = oper is not None and (oper in COMPLEX_ARGS)
+    if is_long_oper and len(the_list.list) <= 2:
+        is_long_oper = False
     is_block_oper = oper is not None and (oper in ('block'))
 
     if is_long_oper:
         shift += 1
+
+    child_list = {}
+    if oper and oper in callables:
+        child_list = callables[oper].children_names
 
     for pos, item in enumerate(the_list.list):
         is_last = (pos == (len(the_list.list) - 1))
@@ -102,6 +118,12 @@ def print_list(out, the_list, shift=0):
         if not is_first and is_long_oper:
             out.write('\n')
             print_shift(shift)
+
+        if pos > 0:
+            param_name = child_list.get(pos - 1, None)
+            if param_name and param_name != 'Input' and oper != 'Apply':  # hack for less visual noise
+                out.write(param_name)
+                out.write(': ')
 
         if isinstance(item, List):
             arg_shift = shift
@@ -112,7 +134,7 @@ def print_list(out, the_list, shift=0):
                 arg_shift += 1
                 out.write('\n')
                 print_shift(arg_shift)
-            sub_oper = print_list(out, item, arg_shift)
+            sub_oper = print_list(out, item, callables, arg_shift)
             out.write(')')
             if sub_oper in ('return', 'let'):
                 out.write('\n')
@@ -243,7 +265,7 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
 
                 # this will copy referenced list before mutating
                 replaced, sub_did_replace = replace_refs(table[ref_id].definition, table, ref_counts)
-                
+
                 # if not should_replace:
                 #     oper = get_oper_from_raw_list(the_list)
                 #     if oper == 'DqPhyStage' and pos == 2:
@@ -317,8 +339,96 @@ def parse(f):
 
     return curr_stack[0]
 
-program = parse(sys.stdin)
-ref_table, ref_counts, _ = collect_refs(program)
-replaced_program = List(False)
-replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
-print_list(sys.stdout, replaced_program)
+class NodeDescr:
+    def __init__(self, name, base, match_callable, children_names):
+        self.name = name
+        self.base = base
+        self.children_names = children_names
+        self.match_callable = match_callable
+
+def parse_node_file(node_file):
+    result = {}
+    js = json.loads(node_file.read().strip())
+    for node in js.get('Nodes', []):
+        name = node.get('Name', None)
+        if not name:
+            continue
+        base = node.get('Base', None)
+        match = node.get('Match', {})
+        match_type = match.get('Type', None)
+        match_callable = None
+        if match_type == 'Callable':
+            match_callable = match.get('Name', None)
+        child_names = {}
+        for child in node.get('Children', []):
+            child_index = int(child.get('Index', -1))
+            child_name = child.get('Name', None)
+            if not child_name:
+                child_name = None
+            if child_name:
+                child_names[child_index] = child_name
+        result[name] = NodeDescr(name, base, match_callable, child_names)
+
+    return result
+
+def inherit_children(node_descriptions):
+    for node in node_descriptions.values():
+        children_names = dict(node.children_names)
+        parent_node = node
+        while parent_node.base:
+            parent_node = node_descriptions.get(parent_node.base, None)
+            if parent_node is None:
+                break
+            new_children_names = dict(parent_node.children_names)
+            new_children_names.update(children_names)
+            children_names = new_children_names
+        node.children_names = children_names
+
+def add_hardcoded(node_descriptions):
+    def try_add(callable, children):
+        if callable in node_descriptions:
+            return
+        node_descriptions[callable] = NodeDescr(callable, None, callable, children)
+
+    try_add('WideTakeBlocks', {0: 'Input', 1: 'Count'})
+
+def build_callable_index(node_descriptions):
+    result = {}
+    for node in node_descriptions.values():
+        if not node.match_callable:
+            continue
+        if len(node.children_names) == 1 and node.children_names.get(0, None) in ('Literal', 'Type', 'ItemType', 'OptionalType'):
+            continue
+        if len(node.children_names) == 2 and node.children_names.get(0, None) == 'Left':
+            continue
+        result[node.match_callable] = node
+
+    def add_alias(alias, original):
+        if alias not in result and original in result:
+            result[alias] = result[original]
+
+    add_alias('WideCondense1', 'Condense1')
+
+    return result
+
+if __name__ == '__main__':
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('-n', '--nodes', default=[], action='append')
+    args = argparser.parse_args()
+
+    node_descrs = {}
+    for node_file in args.nodes:
+        with open(node_file, 'rt') as inf:
+            node_descrs.update(parse_node_file(inf))
+
+    print('Loaded %d nodes' % len(node_descrs), file=sys.stderr)
+    add_hardcoded(node_descrs)
+    inherit_children(node_descrs)
+    callables = build_callable_index(node_descrs)
+    print('%d callables' % len(callables), file=sys.stderr)
+
+    program = parse(sys.stdin)
+    ref_table, ref_counts, _ = collect_refs(program)
+    replaced_program = List(False)
+    replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
+    print_list(sys.stdout, replaced_program, callables)
