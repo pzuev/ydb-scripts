@@ -84,41 +84,6 @@ class Reference:
     def __init__(self, alias):
         self.alias = alias
 
-def read_string(line, pos):
-    esc = False
-    res = ''
-    while pos < len(line):
-        if esc:
-            res += line[pos]
-            pos += 1
-            esc = False
-            continue
-        if line[pos] == '\\':
-            esc = True
-            pos += 1
-            continue
-        if line[pos] == '"':
-            return res, pos + 1
-        res += line[pos]
-        pos += 1
-    raise Exception("unterminated string")
-
-def read_num(line, pos):
-    start = pos
-    while pos < len(line):
-        if not line[pos].isdigit():
-            return int(line[start:pos]), pos
-        pos += 1
-    return int(line[start:]), pos
-
-def read_keyword(line, pos):
-    start = pos
-    while pos < len(line):
-        if line[pos] == ')' or line[pos].isspace():
-            return line[start:pos], pos
-        pos += 1
-    raise Exception("unterminated keyword: ", line[start:])
-
 def get_oper_from_raw_list(the_list):
     oper = None
     if len(the_list) >= 1 and isinstance(the_list[0], Element):
@@ -230,7 +195,7 @@ def print_list(out, the_list, callables, context):
                     out.write(item.value.encode('unicode_escape').decode('utf-8'))
                     out.write('"')
             else:
-                color = get_oper_color(oper) if pos == 0 else COLOR_LITERAL
+                color = get_oper_color(oper) if (oper and pos == 0) else COLOR_LITERAL
                 with Color(color):
                     out.write(str(item.value))
             if not is_last:
@@ -303,6 +268,21 @@ def simple_enough_macro(the_list):
     for item in the_list:
         if isinstance(item, List):
             oper = get_oper(item)
+            if oper == 'lambda' and len(item.list) > 1 and isinstance(item.list[1], List):
+                lambda_args = set()
+                for sub_item in item.list[1].list:
+                    if isinstance(sub_item, Reference):
+                        lambda_args.add(sub_item.alias)
+                is_simple_lambda = False
+                for def_item in item.list[2:]:
+                    if not isinstance(def_item, Reference):
+                        break
+                    if def_item.alias not in lambda_args:
+                        break
+                else:
+                    is_simple_lambda = True
+                simple = simple and is_simple_lambda
+                continue
             if oper is None:
                 if not simple_enough_macro(item.list):
                     simple = False
@@ -378,6 +358,70 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
     filtered_lets.reverse()
 
     return filtered_lets + rebuilt, did_replace
+
+
+def simplify_blocks(the_list):
+    """
+    Replace (block '( (return a b c) ) with a b c.
+    Returns a copy of the program, does not mutate anything in-place
+    """
+    result = []
+
+    for item in the_list:
+        if isinstance(item, List):
+            if get_oper(item) == 'block' and not item.is_quote and len(item.list) == 2:
+                block_content = item.list[1]
+                if isinstance(block_content, List) and len(block_content.list) == 1:
+                    maybe_return = block_content.list[0]
+                    if get_oper(maybe_return) == 'return':
+                        result += simplify_blocks(maybe_return.list[1:])
+                        continue
+            new_list = List(item.is_quote)
+            new_list.list = simplify_blocks(item.list)
+            result.append(new_list)
+        else:
+            result.append(item)
+
+    return result
+
+
+def read_string(line, pos):
+    esc = False
+    res = ''
+    while pos < len(line):
+        if esc:
+            res += line[pos]
+            pos += 1
+            esc = False
+            continue
+        if line[pos] == '\\':
+            esc = True
+            pos += 1
+            continue
+        if line[pos] == '"':
+            return res, pos + 1
+        res += line[pos]
+        pos += 1
+    raise Exception("unterminated quoted string")
+
+
+def read_num(line, pos):
+    start = pos
+    while pos < len(line):
+        if not line[pos].isdigit():
+            return int(line[start:pos]), pos
+        pos += 1
+    return int(line[start:]), pos
+
+
+def read_keyword(line, pos):
+    start = pos
+    while pos < len(line):
+        if line[pos] == ')' or line[pos].isspace():
+            return line[start:pos], pos
+        pos += 1
+    return line[start:]
+
 
 def parse(f):
     curr_stack = [List(False)]
@@ -525,5 +569,7 @@ if __name__ == '__main__':
     ref_table, ref_counts, _ = collect_refs(program)
     replaced_program = List(False)
     replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
-    print_list(sys.stdout, replaced_program, callables, Context())
+    simplified_program = List(False)
+    simplified_program.list = simplify_blocks(replaced_program.list)
+    print_list(sys.stdout, simplified_program, callables, Context())
     print()
