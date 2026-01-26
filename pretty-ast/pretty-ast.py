@@ -9,7 +9,7 @@ COMPLEX_ARGS = {
     'KqpBlockReadOlapTableRanges',
     'KqpPhysicalTx',
     'KqpTxResultBinding',
-    # 'DqPhyStage',
+    'DqPhyStage',
     'DqPhyHashCombine',
     'WideCombiner',
     'BlockHashJoinCore',
@@ -17,6 +17,7 @@ COMPLEX_ARGS = {
     'BlockMergeFinalizeHashed',
     'BlockCombineHashed',
     'TopSort',
+    'Map',
     'NarrowMap',
     'WideMap',
     'WideFilter',
@@ -121,9 +122,14 @@ def print_list(out, the_list, callables, shift=0):
 
         if pos > 0:
             param_name = child_list.get(pos - 1, None)
-            if param_name and param_name != 'Input' and oper != 'Apply':  # hack for less visual noise
+            if param_name == 'Input':
+                param_name = '⇒'
+            elif param_name == 'Lambda':
+                param_name = 'λ'
+            if param_name:
+                out.write('⦗')
                 out.write(param_name)
-                out.write(': ')
+                out.write('⦘')
 
         if isinstance(item, List):
             arg_shift = shift
@@ -397,7 +403,7 @@ def build_callable_index(node_descriptions):
     for node in node_descriptions.values():
         if not node.match_callable:
             continue
-        if len(node.children_names) == 1 and node.children_names.get(0, None) in ('Literal', 'Type', 'ItemType', 'OptionalType'):
+        if len(node.children_names) == 1 and node.children_names.get(0, None) in ('Literal', 'Type', 'ItemType', 'OptionalType', 'Input', 'Apply', 'Callable'):
             continue
         if len(node.children_names) == 2 and node.children_names.get(0, None) == 'Left':
             continue
