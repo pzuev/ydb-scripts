@@ -34,6 +34,41 @@ COMPLEX_ARGS = {
     'Apply',
 }
 
+COLOR_COMMENT = 'comment'
+COLOR_FUNC_NAME = 'func'
+COLOR_SPECIAL_EXPR = 'spec'
+COLOR_STRING_LITERAL = 'str'
+COLOR_LITERAL = 'literal'
+COLOR_ARG = 'arg'
+COLOR_LAMBDA = COLOR_ARG
+COLOR_REF = None
+
+COLORS = {
+    COLOR_COMMENT: '2;128;128;128',
+    COLOR_FUNC_NAME: '2;0;128;128',
+    COLOR_SPECIAL_EXPR: '2;128;0;128',
+    COLOR_STRING_LITERAL: '2;64;192;192',
+    COLOR_LITERAL: '2;64;192;192',
+    COLOR_ARG: '2;192;156;0'
+}
+
+class Color:
+    def __init__(self, color_name):
+        if color_name and (color_name in COLORS) and sys.stdout.isatty():
+            self.color = COLORS[color_name]
+        else:
+            self.color = None
+
+    def __enter__(self):
+        if self.color:
+            sys.stdout.write('\033[38;%sm' % self.color)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.color:
+            sys.stdout.write('\033[39m')
+
+
 class List:
     def __init__(self, is_quote):
         self.list = []
@@ -95,7 +130,30 @@ def get_oper_from_raw_list(the_list):
 def get_oper(the_list):
     return get_oper_from_raw_list(the_list.list)
 
-def print_list(out, the_list, callables, shift=0):
+def get_oper_color(oper):
+    if not oper:
+        return None
+    elif oper == 'lambda':
+        return COLOR_LAMBDA
+    elif oper in ('block', 'let', 'return'):
+        return COLOR_SPECIAL_EXPR
+    else:
+        return COLOR_FUNC_NAME
+
+class Context:
+    def __init__(self, parent=None, shift=None, is_lambda_args=False):
+        self.shift = 0
+        self.lambda_args = set()
+        if parent is not None:
+            self.shift = parent.shift
+            if not is_lambda_args:
+                self.lambda_args.update(parent.lambda_args)
+        if shift is not None:
+            self.shift = shift
+        self.is_lambda_args = is_lambda_args
+
+
+def print_list(out, the_list, callables, context):
     def print_shift(sh):
         out.write(" "*(sh*4))
 
@@ -106,7 +164,7 @@ def print_list(out, the_list, callables, shift=0):
     is_block_oper = oper is not None and (oper in ('block'))
 
     if is_long_oper:
-        shift += 1
+        context.shift += 1
 
     child_list = {}
     if oper and oper in callables:
@@ -118,7 +176,7 @@ def print_list(out, the_list, callables, shift=0):
 
         if not is_first and is_long_oper:
             out.write('\n')
-            print_shift(shift)
+            print_shift(context.shift)
 
         if pos > 0:
             param_name = child_list.get(pos - 1, None)
@@ -127,55 +185,75 @@ def print_list(out, the_list, callables, shift=0):
             elif param_name == 'Lambda':
                 param_name = 'λ'
             if param_name:
-                out.write('⦗')
-                out.write(param_name)
-                out.write('⦘')
+                with Color(COLOR_COMMENT):
+                    out.write('⦗')
+                    out.write(param_name)
+                    out.write('⦘')
 
         if isinstance(item, List):
-            arg_shift = shift
-            if item.is_quote:
-                out.write('\'')
-            out.write('(')
+            is_lambda_args = (oper == 'lambda') and (pos == 1)
+            sub_oper = get_oper(item)
+            sub_oper_color = get_oper_color('block') if oper == 'block' else \
+                get_oper_color(sub_oper) if not is_lambda_args else COLOR_ARG
+
+            arg_shift = context.shift
+            with Color(sub_oper_color):
+                if item.is_quote:
+                    out.write('\'')
+                out.write('(')
             if is_block_oper:
                 arg_shift += 1
                 out.write('\n')
                 print_shift(arg_shift)
-            sub_oper = print_list(out, item, callables, arg_shift)
-            out.write(')')
+
+            sub_ctx = Context(parent=context, shift=arg_shift, is_lambda_args=is_lambda_args)
+            print_list(out, item, callables, sub_ctx)
+            if is_lambda_args:
+                context.lambda_args.update(sub_ctx.lambda_args)
+            with Color(sub_oper_color):
+                out.write(')')
             if sub_oper in ('return', 'let'):
                 out.write('\n')
                 if is_last:
-                    print_shift(shift-1)
+                    print_shift(context.shift-1)
                 else:
-                    print_shift(shift)
+                    print_shift(context.shift)
             elif not is_last:
                 out.write(' ')
         elif isinstance(item, Element):
             if item.is_quote:
-                out.write('\'')
+                with Color(COLOR_LITERAL):
+                    out.write('\'')
             if item.is_quoted_str:
-                out.write('"')
-                out.write(item.value.encode('unicode_escape').decode('utf-8'))
-                out.write('"')
+                with Color(COLOR_STRING_LITERAL):
+                    out.write('"')
+                    out.write(item.value.encode('unicode_escape').decode('utf-8'))
+                    out.write('"')
             else:
-                out.write(str(item.value))
+                color = get_oper_color(oper) if pos == 0 else COLOR_LITERAL
+                with Color(color):
+                    out.write(str(item.value))
             if not is_last:
                 out.write(' ')
         elif isinstance(item, Reference):
-            out.write('$')
-            out.write(str(item.alias))
+            if context.is_lambda_args:
+                color = COLOR_ARG
+                context.lambda_args.add(item.alias)
+            else:
+                color = COLOR_ARG if (item.alias in context.lambda_args) else COLOR_REF
+            with Color(color):
+                out.write('$')
+                out.write(str(item.alias))
+
             if not is_last:
                 out.write(' ')
         else:
             raise Exception("Unknown list element type:", item.__class__.__name__)
 
     if is_long_oper:
-        shift -= 1
+        context.shift -= 1
         out.write('\n')
-        print_shift(shift)
-
-    return oper
-
+        print_shift(context.shift)
 
 class Macro:
     def __init__(self, definition, is_leaf):
@@ -420,21 +498,32 @@ def build_callable_index(node_descriptions):
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-n', '--nodes', default=[], action='append')
+    argparser.add_argument('-r', '--repo', default=None)
     args = argparser.parse_args()
 
     node_descrs = {}
-    for node_file in args.nodes:
+    node_files = []
+    if args.repo:
+        import os.path
+        node_files += [os.path.join(args.repo, path) for path in [
+            'ydb/library/yql/dq/expr_nodes/dq_expr_nodes.json',
+            'ydb/core/kqp/expr_nodes/kqp_expr_nodes.json',
+            'yql/essentials/core/expr_nodes/yql_expr_nodes.json',
+        ]]
+    node_files += args.nodes
+    for node_file in node_files:
         with open(node_file, 'rt') as inf:
             node_descrs.update(parse_node_file(inf))
 
-    print('Loaded %d nodes' % len(node_descrs), file=sys.stderr)
+    # print('Loaded %d nodes' % len(node_descrs), file=sys.stderr)
     add_hardcoded(node_descrs)
     inherit_children(node_descrs)
     callables = build_callable_index(node_descrs)
-    print('%d callables' % len(callables), file=sys.stderr)
+    # print('%d callables' % len(callables), file=sys.stderr)
 
     program = parse(sys.stdin)
     ref_table, ref_counts, _ = collect_refs(program)
     replaced_program = List(False)
     replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
-    print_list(sys.stdout, replaced_program, callables)
+    print_list(sys.stdout, replaced_program, callables, Context())
+    print()
