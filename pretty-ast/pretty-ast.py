@@ -5,6 +5,9 @@ import argparse
 import json
 
 COMPLEX_ARGS = {
+    'DqCnHashShuffle',
+    'DqCnMerge',
+    'DqReplicate',
     'KqpPhysicalQuery',
     'KqpBlockReadOlapTableRanges',
     'KqpPhysicalTx',
@@ -32,6 +35,37 @@ COMPLEX_ARGS = {
     'AsStruct',
     'Udf',
     'Apply',
+    'List',
+    'AsList',
+    'RangeCreate',
+    'RangeFinalize',
+    'RangeMultiply',
+    'RangeIntersect',
+    'RangeUnion',
+    'If',
+    'IfPresent',
+    'TupleType',
+}
+
+SIMPLE_OPERATORS = {
+    'OptionalType',
+    'StructType',
+    'DataType',
+    'ResourceType',
+    'TupleType',
+    'ListType',
+    'CallableType',
+    'VoidType',
+    'Void',
+    'BlockType',
+    'Nothing',
+    'SafeCast',
+    'String',
+    '-',
+    '+',
+    '*',
+    '/',
+    'Int32',  # TODO: generate a collection of types
 }
 
 COLOR_COMMENT = 'comment'
@@ -108,7 +142,7 @@ def get_oper_color(oper):
         return None
     elif oper == 'lambda':
         return COLOR_LAMBDA
-    elif oper in ('block', 'let', 'return'):
+    elif oper in ('block', 'let', 'return', 'declare'):
         return COLOR_SPECIAL_EXPR
     else:
         return COLOR_FUNC_NAME
@@ -213,7 +247,7 @@ def print_list(out, the_list: List, callables, context: Context):
                 context.lambda_args.update(sub_ctx.lambda_args)
             with Color(sub_oper_color):
                 out.write(')')
-            if sub_oper in ('return', 'let'):
+            if sub_oper in ('return', 'let', 'declare'):
                 out.write('\n')
                 if is_last:
                     print_shift(context.shift-1)
@@ -324,7 +358,7 @@ def simple_enough_macro(the_list):
                     simple = False
                     break
                 continue
-            simple = simple and (oper in ('StructType', 'DataType', 'ResourceType', 'TupleType', 'CallableType', 'VoidType', 'Void', 'BlockType'))
+            simple = simple and (oper in SIMPLE_OPERATORS)
     return simple
 
 def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
@@ -371,7 +405,7 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
                 #     if oper == 'DqPhyStage' and pos == 2:
                 #         should_replace = True
 
-                if not should_replace:
+                if not should_replace and ref_counts.get(ref_id) <= 3:
                     # Maybe we still can decide to replace if the content is simple enough
                     should_replace = simple_enough_macro(replaced)
 
