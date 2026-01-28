@@ -130,19 +130,35 @@ class Context:
         self.is_lambda_args = is_lambda_args
 
 
-def print_list(out, the_list, callables, context):
+def get_is_long_oper(the_list: List):
+    if len(the_list.list) <= 2:
+        return False
+    oper = get_oper(the_list)
+    return oper is not None and (oper in COMPLEX_ARGS)
+
+
+def has_long_or_block_oper_inside(item):
+    if isinstance(item, List):
+        if get_is_long_oper(item) or get_oper(item) == 'block':
+            return True
+        for sub_item in item.list:
+            if has_long_or_block_oper_inside(sub_item):
+                return True
+    else:
+        return False
+
+
+def print_list(out, the_list: List, callables, context: Context):
     def print_shift(sh):
         for _ in range(sh):
             if context.tabstops:
                 with Color(COLOR_TABLINE):
-                    out.write('   \u2506')
+                    out.write('\u2506   ')
             else:
                 out.write('    ')
 
     oper = get_oper(the_list)
-    is_long_oper = oper is not None and (oper in COMPLEX_ARGS)
-    if is_long_oper and len(the_list.list) <= 2:
-        is_long_oper = False
+    is_long_oper = get_is_long_oper(the_list)
     is_block_oper = oper is not None and (oper in ('block'))
 
     if is_long_oper:
@@ -171,6 +187,9 @@ def print_list(out, the_list, callables, context):
                     out.write('⦗')
                     out.write(param_name)
                     out.write('⦘')
+                if not is_first and is_long_oper and isinstance(item, List) and has_long_or_block_oper_inside(item):
+                    out.write('\n')
+                    print_shift(context.shift)
 
         if isinstance(item, List):
             is_lambda_args = (oper == 'lambda') and (pos == 1)
