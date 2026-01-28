@@ -179,7 +179,7 @@ def print_list(out, the_list: List, callables, context: Context):
         if pos > 0:
             param_name = child_list.get(pos - 1, None)
             if param_name == 'Input':
-                param_name = '⇒'
+                param_name = '⇐'
             elif param_name == 'Lambda':
                 param_name = 'λ'
             if param_name:
