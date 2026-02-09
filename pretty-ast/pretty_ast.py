@@ -15,6 +15,7 @@ COMPLEX_ARGS = {
     'DqPhyStage',
     'DqPhyHashCombine',
     'WideCombiner',
+    'MapJoinCore',
     'BlockHashJoinCore',
     'BlockAsStruct',
     'BlockMergeFinalizeHashed',
@@ -25,6 +26,8 @@ COMPLEX_ARGS = {
     'WideMap',
     'WideFilter',
     'ExpandMap',
+    'FlatMap',
+    'NarrowSqueezeToDict',
     'Condense',
     'WideCondense',
     'Condense1',
@@ -89,22 +92,95 @@ COLORS = {
 }
 
 
-class Color:
-    def __init__(self, color_name):
-        if color_name and (color_name in COLORS) and sys.stdout.isatty():
-            self.color = COLORS[color_name]
-        else:
-            self.color = None
+class TerminalPrinter:
+    class TermColorWrapper:
+        def __init__(self, color_name):
+            if color_name and (color_name in COLORS) and sys.stdout.isatty():
+                self.color = COLORS[color_name]
+            else:
+                self.color = None
 
-    def __enter__(self):
-        if self.color:
-            sys.stdout.write('\033[38;%sm' % self.color)
-        return self
+        def __enter__(self):
+            if self.color:
+                sys.stdout.write('\033[38;%sm' % self.color)
+            return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        if self.color:
-            sys.stdout.write('\033[39m')
+        def __exit__(self, exc_type, exc_value, traceback):
+            if self.color:
+                sys.stdout.write('\033[39m')
 
+    def __init__(self):
+        pass
+
+    def color(self, color_name):
+        return TerminalPrinter.TermColorWrapper(color_name)
+
+    def out(self, s):
+        sys.stdout.write(s)
+
+    def endl(self):
+        sys.stdout.write('\n')
+
+    def finalize(self):
+        self.endl()
+
+class HtmlPrinter:
+    lines: list[str]
+    curr_line: str
+    style_stack: list[str]
+    prev_style_depth: int
+
+    class HtmlColorWrapper:
+        color: str
+        style_stack: list[str]
+
+        def __init__(self, style_stack: list[str], color: str):
+            self.color = color
+            self.style_stack = style_stack
+
+        def __enter__(self):
+            if self.color:
+                self.style_stack.append(self.color)
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            if self.color:
+                self.style_stack.pop()
+
+    def __init__(self):
+        self.prev_style_depth = 0
+        self.style_stack = []
+        self.curr_line = ''
+        self.lines = []
+
+    def check_change_color(self):
+        if len(self.style_stack) == self.prev_style_depth:
+            return
+        if self.prev_style_depth > 0:
+            self.curr_line += '</span>'
+        if len(self.style_stack) > 0:
+            self.curr_line += ('<span class="syntax_%s">' % self.style_stack[-1])
+        self.prev_style_depth = len(self.style_stack)
+
+    def color(self, color_name):
+        return HtmlPrinter.HtmlColorWrapper(self.style_stack, color_name)
+
+    def out(self, s):
+        self.check_change_color();
+        self.curr_line += s
+
+    def endl(self):
+        self.check_change_color()
+        if len(self.style_stack) > 0:
+            self.curr_line += '</span>'
+        self.lines.append(self.curr_line)
+        self.curr_line = ''
+        if len(self.style_stack) > 0:
+            self.curr_line += ('<span class="syntax_%s">' % self.style_stack[-1])
+
+    def finalize(self):
+        if self.curr_line:
+            self.endl();
 
 class List:
     def __init__(self, is_quote):
@@ -149,14 +225,19 @@ def get_oper_color(oper):
 
 
 class Context:
-    def __init__(self, parent=None, shift=None, is_lambda_args=False, tabstops=None):
+    printer: TerminalPrinter|HtmlPrinter
+
+    def __init__(self, parent: Context=None, shift: int=None, is_lambda_args: bool=False, tabstops: bool=None, printer=None):
         self.shift = 0
         self.lambda_args = set()
         if parent is not None:
+            self.printer = parent.printer
             self.tabstops = parent.tabstops
             self.shift = parent.shift
             if not is_lambda_args:
                 self.lambda_args.update(parent.lambda_args)
+        if printer is not None:
+            self.printer = printer
         if shift is not None:
             self.shift = shift
         if tabstops is not None:
@@ -186,10 +267,10 @@ def print_list(out, the_list: List, callables, context: Context):
     def print_shift(sh):
         for _ in range(sh):
             if context.tabstops:
-                with Color(COLOR_TABLINE):
-                    out.write('\u2506   ')
+                with context.printer.color(COLOR_TABLINE):
+                    context.printer.out('\u2506   ')
             else:
-                out.write('    ')
+                context.printer.out('    ')
 
     oper = get_oper(the_list)
     is_long_oper = get_is_long_oper(the_list)
@@ -207,22 +288,20 @@ def print_list(out, the_list: List, callables, context: Context):
         is_first = (pos == 0)
 
         if not is_first and is_long_oper:
-            out.write('\n')
+            context.printer.endl()
             print_shift(context.shift)
 
         if pos > 0:
             param_name = child_list.get(pos - 1, None)
-            if param_name == 'Input':
+            if pos == 1 and (param_name == 'Input' or param_name == 'Stream'):
                 param_name = '⇐'
             elif param_name == 'Lambda':
                 param_name = 'λ'
             if param_name:
-                with Color(COLOR_COMMENT):
-                    out.write('⦗')
-                    out.write(param_name)
-                    out.write('⦘')
+                with context.printer.color(COLOR_COMMENT):
+                    context.printer.out('⦗' + param_name + '⦘')
                 if not is_first and is_long_oper and isinstance(item, List) and has_long_or_block_oper_inside(item):
-                    out.write('\n')
+                    context.printer.endl();
                     print_shift(context.shift)
 
         if isinstance(item, List):
@@ -232,62 +311,62 @@ def print_list(out, the_list: List, callables, context: Context):
                 get_oper_color(sub_oper) if not is_lambda_args else COLOR_ARG
 
             arg_shift = context.shift
-            with Color(sub_oper_color):
+            with context.printer.color(sub_oper_color):
                 if item.is_quote:
-                    out.write('\'')
-                out.write('(')
+                    context.printer.out('\'')
+                context.printer.out('(')
             if is_block_oper:
                 arg_shift += 1
-                out.write('\n')
+                context.printer.endl()
                 print_shift(arg_shift)
 
             sub_ctx = Context(parent=context, shift=arg_shift, is_lambda_args=is_lambda_args)
             print_list(out, item, callables, sub_ctx)
             if is_lambda_args:
                 context.lambda_args.update(sub_ctx.lambda_args)
-            with Color(sub_oper_color):
-                out.write(')')
+            with context.printer.color(sub_oper_color):
+                context.printer.out(')')
             if sub_oper in ('return', 'let', 'declare'):
-                out.write('\n')
+                context.printer.endl()
                 if is_last:
                     print_shift(context.shift-1)
                 else:
                     print_shift(context.shift)
             elif not is_last:
-                out.write(' ')
+                context.printer.out(' ')
         elif isinstance(item, Element):
             if item.is_quote:
-                with Color(COLOR_LITERAL):
-                    out.write('\'')
+                with context.printer.color(COLOR_LITERAL):
+                    context.printer.out('\'')
             if item.is_quoted_str:
-                with Color(COLOR_STRING_LITERAL):
-                    out.write('"')
-                    out.write(item.value.encode('unicode_escape').decode('utf-8'))
-                    out.write('"')
+                with context.printer.color(COLOR_STRING_LITERAL):
+                    context.printer.out('"')
+                    context.printer.out(item.value.encode('unicode_escape').decode('utf-8'))
+                    context.printer.out('"')
             else:
                 color = get_oper_color(oper) if (oper and pos == 0) else COLOR_LITERAL
-                with Color(color):
-                    out.write(str(item.value))
+                with context.printer.color(color):
+                    context.printer.out(str(item.value))
             if not is_last:
-                out.write(' ')
+                context.printer.out(' ')
         elif isinstance(item, Reference):
             if context.is_lambda_args:
                 color = COLOR_ARG
                 context.lambda_args.add(item.alias)
             else:
                 color = COLOR_ARG if (item.alias in context.lambda_args) else COLOR_REF
-            with Color(color):
-                out.write('$')
-                out.write(str(item.alias))
+            with context.printer.color(color):
+                context.printer.out('$')
+                context.printer.out(str(item.alias))
 
             if not is_last:
-                out.write(' ')
+                context.printer.out(' ')
         else:
             raise Exception("Unknown list element type:", item.__class__.__name__)
 
     if is_long_oper:
         context.shift -= 1
-        out.write('\n')
+        context.printer.endl()
         print_shift(context.shift)
 
 class Macro:
@@ -493,14 +572,14 @@ def read_keyword(line, pos):
     return line[start:]
 
 
-def parse(f):
+def parse(lines):
     curr_stack = [List(False)]
     is_quote = False
 
     def push(item):
         curr_stack[-1].list.append(item)
 
-    for line in f:
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -606,10 +685,29 @@ def build_callable_index(node_descriptions):
             result[alias] = result[original]
 
     add_alias('WideCondense1', 'Condense1')
+    add_alias('NarrowSqueezeToDict', 'SqueezeToDict')
 
     return result
 
-if __name__ == '__main__':
+
+def parse_and_process(lines):
+    program = parse(lines)
+    ref_table, ref_counts, _ = collect_refs(program)
+    replaced_program = List(False)
+    replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
+    simplified_program = List(False)
+    simplified_program.list = simplify_blocks(replaced_program.list)
+    return simplified_program
+
+def htmlmain(input):
+    input = sys.stdin.read()
+    program = parse_and_process(input.split('\n'))
+    printer = HtmlPrinter()
+    print_list(sys.stdout, program, {}, Context(tabstops=False, printer=printer))
+    printer.finalize()
+    return printer.lines
+
+def climain():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-n', '--nodes', default=[], action='append')
     argparser.add_argument('-r', '--repo', default=None)
@@ -638,11 +736,15 @@ if __name__ == '__main__':
     callables = build_callable_index(node_descrs)
     # print('%d callables' % len(callables), file=sys.stderr)
 
-    program = parse(sys.stdin)
-    ref_table, ref_counts, _ = collect_refs(program)
-    replaced_program = List(False)
-    replaced_program.list, _ = replace_refs(program.list, ref_table, ref_counts)
-    simplified_program = List(False)
-    simplified_program.list = simplify_blocks(replaced_program.list)
-    print_list(sys.stdout, simplified_program, callables, Context(tabstops=tabstops))
-    print()
+    input = sys.stdin.read()
+    program = parse_and_process(input.split('\n'))
+    printer = TerminalPrinter()
+    print_list(sys.stdout, program, callables, Context(tabstops=tabstops, printer=printer))
+    printer.finalize()
+
+
+def testme(input):
+    return input
+
+if __name__ == '__main__':
+    climain()
