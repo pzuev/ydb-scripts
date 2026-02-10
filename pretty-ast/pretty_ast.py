@@ -3,6 +3,7 @@
 import sys
 import argparse
 import json
+from typing import Self
 
 COMPLEX_ARGS = {
     'DqCnHashShuffle',
@@ -227,7 +228,7 @@ def get_oper_color(oper):
 class Context:
     printer: TerminalPrinter|HtmlPrinter
 
-    def __init__(self, parent: Context=None, shift: int=None, is_lambda_args: bool=False, tabstops: bool=None, printer=None):
+    def __init__(self, parent: Self=None, shift: int=None, is_lambda_args: bool=False, tabstops: bool=None, printer=None):
         self.shift = 0
         self.lambda_args = set()
         if parent is not None:
@@ -616,12 +617,14 @@ def parse(lines):
 
     return curr_stack[0]
 
+
 class NodeDescr:
     def __init__(self, name, base, match_callable, children_names):
         self.name = name
         self.base = base
         self.children_names = children_names
         self.match_callable = match_callable
+
 
 def parse_node_file(node_file):
     result = {}
@@ -648,6 +651,7 @@ def parse_node_file(node_file):
 
     return result
 
+
 def inherit_children(node_descriptions):
     for node in node_descriptions.values():
         children_names = dict(node.children_names)
@@ -661,6 +665,7 @@ def inherit_children(node_descriptions):
             children_names = new_children_names
         node.children_names = children_names
 
+
 def add_hardcoded(node_descriptions):
     def try_add(callable, children):
         if callable in node_descriptions:
@@ -668,6 +673,7 @@ def add_hardcoded(node_descriptions):
         node_descriptions[callable] = NodeDescr(callable, None, callable, children)
 
     try_add('WideTakeBlocks', {0: 'Input', 1: 'Count'})
+
 
 def build_callable_index(node_descriptions):
     result = {}
@@ -699,6 +705,7 @@ def parse_and_process(lines):
     simplified_program.list = simplify_blocks(replaced_program.list)
     return simplified_program
 
+
 def htmlmain(input):
     input = sys.stdin.read()
     program = parse_and_process(input.split('\n'))
@@ -706,6 +713,7 @@ def htmlmain(input):
     print_list(sys.stdout, program, {}, Context(tabstops=False, printer=printer))
     printer.finalize()
     return printer.lines
+
 
 def climain():
     argparser = argparse.ArgumentParser()
@@ -742,9 +750,6 @@ def climain():
     print_list(sys.stdout, program, callables, Context(tabstops=tabstops, printer=printer))
     printer.finalize()
 
-
-def testme(input):
-    return input
 
 if __name__ == '__main__':
     climain()
