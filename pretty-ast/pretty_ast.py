@@ -5,16 +5,22 @@ import argparse
 import json
 from typing import Self
 
+NEVER_INLINE = {
+    'DqPhyStage',
+}
+
 COMPLEX_ARGS = {
     'DqCnHashShuffle',
     'DqCnMerge',
     'DqCnMap',
     'DqReplicate',
+    'DqSink',
+    'DqPhyStage',
     'KqpPhysicalQuery',
     'KqpBlockReadOlapTableRanges',
     'KqpPhysicalTx',
     'KqpTxResultBinding',
-    'DqPhyStage',
+    'KqpTableSinkSettings',
     'DqPhyHashCombine',
     'WideCombiner',
     'MapJoinCore',
@@ -381,10 +387,12 @@ def print_list(out, the_list: List, callables, context: Context):
         context.printer.endl()
         print_shift(context.shift)
 
+
 class Macro:
     def __init__(self, definition, is_leaf):
         self.definition = definition
         self.is_leaf = is_leaf
+
 
 def collect_refs(the_list):
     table = {}
@@ -424,11 +432,14 @@ def collect_refs(the_list):
 
     return table, ref_counts, is_leaf
 
+
 def simple_enough_macro(the_list):
     simple = True
     for item in the_list:
         if isinstance(item, List):
             oper = get_oper(item)
+            if oper in NEVER_INLINE:
+                return False
             if oper == 'lambda' and len(item.list) > 1 and isinstance(item.list[1], List):
                 lambda_args = set()
                 for sub_item in item.list[1].list:
@@ -452,6 +463,22 @@ def simple_enough_macro(the_list):
             simple = simple and (oper in SIMPLE_OPERATORS)
     return simple
 
+
+def prevent_replacement(table, ref_id):
+    definition = table[ref_id].definition
+    if len(definition) == 1 and isinstance(definition[0], List):
+        oper = get_oper(definition[0])
+        if oper in NEVER_INLINE:
+            return True
+    return False
+
+
+def should_replace_immediately(ref_id, table, ref_counts):
+    return \
+        (ref_counts.get(ref_id, 0) == 1 or table[ref_id].is_leaf) \
+        and not prevent_replacement(table, ref_id)
+
+
 def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
     rebuilt = []
     did_replace = set()
@@ -466,7 +493,7 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
                 if isinstance(sub_list[0], Element) and not sub_list[0].is_quote and not sub_list[0].is_quoted_str and sub_list[0].value == 'let' and isinstance(sub_list[1], Reference):
                     ref_id = sub_list[1].alias
                     # Remove let definitions that are guaranteed to be replaced
-                    if not (ref_counts.get(ref_id, 0) == 1 or table[ref_id].is_leaf):
+                    if not should_replace_immediately(ref_id, table, ref_counts):
                         l = List(item.is_quote)
                         l.list, sub_did_replace = replace_refs(sub_list, table, ref_counts, ref_id)
                         lets.append((ref_id, l, sub_did_replace))
@@ -485,26 +512,21 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
 
             if ref_id in table:
                 should_replace = False
-                if (ref_counts.get(ref_id, 0) == 1 or table[ref_id].is_leaf):
-                    # TODO: use some kind of complexity measure instead of is_leaf
-                    # because the current heuristic looks weird in this case
-                    #    (let $8 (DataType 'Int64))
-                    #    (let $10 (OptionalType $8))
-                    #    (let $13 (OptionalType (DataType 'Double)))
-                    # Here $13 will be replaced but $10 won't be.
+                if should_replace_immediately(ref_id, table, ref_counts):
                     should_replace = True
 
-                # this will copy referenced list before mutating
-                replaced, sub_did_replace = replace_refs(table[ref_id].definition, table, ref_counts)
+                if not prevent_replacement(table, ref_id):
+                    # this will copy referenced list before mutating
+                    replaced, sub_did_replace = replace_refs(table[ref_id].definition, table, ref_counts)
 
-                # if not should_replace:
-                #     oper = get_oper_from_raw_list(the_list)
-                #     if oper == 'DqPhyStage' and pos == 2:
-                #         should_replace = True
+                    # if not should_replace:
+                    #     oper = get_oper_from_raw_list(the_list)
+                    #     if oper == 'DqPhyStage' and pos == 2:
+                    #         should_replace = True
 
-                if not should_replace and ref_counts.get(ref_id) <= 3:
-                    # Maybe we still can decide to replace if the content is simple enough
-                    should_replace = simple_enough_macro(replaced)
+                    if not should_replace and ref_counts.get(ref_id) <= 3:
+                        # Maybe we still can decide to replace if the content is simple enough
+                        should_replace = simple_enough_macro(replaced)
 
                 if should_replace:
                     rebuilt += replaced
