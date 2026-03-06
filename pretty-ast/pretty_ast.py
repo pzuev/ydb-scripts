@@ -8,6 +8,7 @@ from typing import Self
 COMPLEX_ARGS = {
     'DqCnHashShuffle',
     'DqCnMerge',
+    'DqCnMap',
     'DqReplicate',
     'KqpPhysicalQuery',
     'KqpBlockReadOlapTableRanges',
@@ -70,6 +71,7 @@ SIMPLE_OPERATORS = {
     '*',
     '/',
     'Int32',  # TODO: generate a collection of types
+    'Int64',
 }
 
 COLOR_COMMENT = 'comment'
@@ -250,6 +252,14 @@ def get_is_long_oper(the_list: List):
     if len(the_list.list) <= 2:
         return False
     oper = get_oper(the_list)
+    if (oper == 'lambda' or oper == 'return') and len(the_list.list) >= 6:  # TODO: this is arbitrary
+        body_start_idx = 2 if (oper == 'lambda') else 1
+        has_non_refs_in_body = False
+        for arg in the_list.list[body_start_idx:]:
+            if not isinstance(arg, Reference):
+                has_non_refs_in_body = True
+                break
+        return has_non_refs_in_body
     return oper is not None and (oper in COMPLEX_ARGS)
 
 
@@ -275,6 +285,7 @@ def print_list(out, the_list: List, callables, context: Context):
 
     oper = get_oper(the_list)
     is_long_oper = get_is_long_oper(the_list)
+    # TODO: very wide multi-output lambdas should also be multi-line, like lambdas with ('block ...) bodies
     is_block_oper = oper is not None and (oper in ('block'))
 
     if is_long_oper:
@@ -475,6 +486,12 @@ def replace_refs(the_list, table, ref_counts, current_let_ref_id=None):
             if ref_id in table:
                 should_replace = False
                 if (ref_counts.get(ref_id, 0) == 1 or table[ref_id].is_leaf):
+                    # TODO: use some kind of complexity measure instead of is_leaf
+                    # because the current heuristic looks weird in this case
+                    #    (let $8 (DataType 'Int64))
+                    #    (let $10 (OptionalType $8))
+                    #    (let $13 (OptionalType (DataType 'Double)))
+                    # Here $13 will be replaced but $10 won't be.
                     should_replace = True
 
                 # this will copy referenced list before mutating
